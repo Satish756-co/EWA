@@ -1,0 +1,6 @@
+The system is running HANA revision2.00.079, for which SAP recommends disabling 16KB huge alignment defragmentation as a proactive memory management optimization. While memory reclaim counts show reclamation activity, that count alone doesn’t prove the events are huge alignment defragmentation. For this revision level, SAP considers the parameter applicable. It is not a BW performance tweak with guaranteed gains; it’s best described as reducing memory management overhead when defragmentation is significant. So, recommended, yes, based on HANA revision applicability, not based on reclaim counts.
+
+
+Our HANA system runs revision79.08, which is within the affected releases in SAP Note3716078.
+So the parameter optimized small page write max unused chunk is applicable to review in your system.
+The recommended range is 5 to488. Since your current value is0, we recommend aligning with SAP’s guidance to optimize save point related small page write processing, while being clear that this is a HANA infrastructure optimization and not a guaranteed direct improvement to BW query performance.
