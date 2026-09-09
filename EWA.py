@@ -326,11 +326,16 @@ class EWADocParser:
                         parts.append(cell.text.strip())
         self.full_text = "\n".join(parts)
 
-    # ── .doc via Windows COM (Word must be installed) ─────────────
+    # ── .doc via Windows COM (requires pywin32 + Word installed) ────
     def _parse_doc_com(self):
         try:
             import win32com.client
             import pythoncom
+        except ImportError:
+            print("  [DOC] pywin32 not installed  →  trying docx2txt fallback")
+            print("        (to use Word COM in future: pip install pywin32)")
+            return False
+        try:
             print(f"  [DOC] Using Word COM to open: {self.filepath}")
             pythoncom.CoInitialize()
             word = win32com.client.Dispatch("Word.Application")
@@ -343,34 +348,60 @@ class EWADocParser:
             pythoncom.CoUninitialize()
             return True
         except Exception as e:
-            print(f"  [DOC] COM method failed ({e}), trying fallback...")
+            print(f"  [DOC] COM method failed ({e}), trying docx2txt fallback...")
             return False
 
-    # ── .doc fallback: convert via LibreOffice if COM unavailable ──
-    def _parse_doc_fallback(self):
+    # ── .doc fallback 1: docx2txt (pip install docx2txt) ─────────
+    def _parse_doc_docx2txt(self):
+        try:
+            import docx2txt
+            print(f"  [DOC] Using docx2txt to extract: {self.filepath}")
+            self.full_text = docx2txt.process(self.filepath)
+            if self.full_text and len(self.full_text.strip()) > 50:
+                return True
+        except ImportError:
+            print("  [DOC] docx2txt not installed  →  pip install docx2txt")
+        except Exception as e:
+            print(f"  [DOC] docx2txt failed ({e})")
+        return False
+
+    # ── .doc fallback 2: LibreOffice headless conversion ──────────
+    def _parse_doc_libreoffice(self):
         import subprocess, tempfile, shutil
         soffice = shutil.which("soffice") or shutil.which("libreoffice")
-        if soffice:
-            try:
-                print(f"  [DOC] Using LibreOffice to convert: {self.filepath}")
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    subprocess.run(
-                        [soffice, "--headless", "--convert-to", "docx",
-                         "--outdir", tmpdir, self.filepath],
-                        check=True, capture_output=True
-                    )
-                    stem = Path(self.filepath).stem
-                    converted = Path(tmpdir) / f"{stem}.docx"
-                    if converted.exists():
-                        old_path = self.filepath
-                        self.filepath = str(converted)
-                        self._parse_docx()
-                        self.filepath = old_path
-                        return True
-            except Exception as e:
-                print(f"  [DOC] LibreOffice conversion failed: {e}")
-        print("\n  [ERROR] Cannot read .doc file directly.")
-        print("  Please save the EWA report as .docx or .pdf and re-run.\n")
+        if not soffice:
+            return False
+        try:
+            print(f"  [DOC] Using LibreOffice to convert: {self.filepath}")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                subprocess.run(
+                    [soffice, "--headless", "--convert-to", "docx",
+                     "--outdir", tmpdir, self.filepath],
+                    check=True, capture_output=True
+                )
+                converted = Path(tmpdir) / f"{Path(self.filepath).stem}.docx"
+                if converted.exists():
+                    old_path = self.filepath
+                    self.filepath = str(converted)
+                    self._parse_docx()
+                    self.filepath = old_path
+                    return True
+        except Exception as e:
+            print(f"  [DOC] LibreOffice conversion failed: {e}")
+        return False
+
+    def _parse_doc_fallback(self):
+        if self._parse_doc_docx2txt():
+            return
+        if self._parse_doc_libreoffice():
+            return
+        print("\n" + "="*62)
+        print("  [ERROR] Could not read the .doc file.")
+        print("  Fix: install one of the following and retry:")
+        print("    pip install pywin32     (uses Microsoft Word — recommended)")
+        print("    pip install docx2txt   (no Word needed)")
+        print("  OR open the file in Word and Save As → .docx or .pdf")
+        print("="*62 + "\n")
         sys.exit(1)
 
     def extract_date(self):
