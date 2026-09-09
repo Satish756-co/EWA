@@ -425,19 +425,105 @@ class EWADocParser:
 
 # ─────────────────────────────────────────────
 class EWAPDFParser:
+    _MIN_CHARS_PER_PAGE = 80   # below this → assume image/scanned PDF
+
     def __init__(self, filepath):
         self.filepath  = filepath
         self.full_text = ""
         self.sections  = []
+        self._pages    = 0
 
     def parse(self):
         print(f"  [PDF] Parsing: {self.filepath}")
-        with pdfplumber.open(self.filepath) as pdf:
-            pages = len(pdf.pages)
-            for page in pdf.pages:
-                self.full_text += (page.extract_text() or "") + "\n"
-        print(f"  [PDF] {pages} pages, {len(self.full_text):,} chars")
+
+        # ── Attempt 1: pdfplumber (text-based PDFs) ───────────────
+        self._try_pdfplumber()
+        avg = len(self.full_text) / max(self._pages, 1)
+        print(f"  [PDF] pdfplumber → {len(self.full_text):,} chars across {self._pages} pages  (avg {avg:.0f}/page)")
+
+        # ── Attempt 2: PyMuPDF — different engine, sometimes better
+        if avg < self._MIN_CHARS_PER_PAGE:
+            print("  [PDF] Very little text — trying PyMuPDF engine...")
+            self._try_pymupdf()
+            avg = len(self.full_text) / max(self._pages, 1)
+
+        # ── Attempt 3: OCR — for scanned / image-only PDFs ────────
+        if avg < self._MIN_CHARS_PER_PAGE:
+            print("  [PDF] Still low yield — this looks like a scanned PDF. Starting OCR...")
+            self._try_ocr()
+            avg = len(self.full_text) / max(self._pages, 1)
+
+        if len(self.full_text.strip()) < 100:
+            print("\n  [ERROR] Could not extract text from this PDF.")
+            print("  It appears to be fully image-based (scanned).")
+            print("  To fix, install OCR support:")
+            print("    pip install pytesseract pdf2image")
+            print("    Tesseract (Windows): https://github.com/UB-Mannheim/tesseract/wiki")
+            print("  OR save the EWA report as .doc/.docx and re-run.")
+            sys.exit(1)
+
+        print(f"  [PDF] Final: {len(self.full_text):,} chars extracted")
         return self.full_text
+
+    # ── pdfplumber ────────────────────────────────────────────────
+    def _try_pdfplumber(self):
+        try:
+            with pdfplumber.open(self.filepath) as pdf:
+                self._pages = len(pdf.pages)
+                parts = []
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        parts.append(t)
+                self.full_text = "\n".join(parts)
+        except Exception as e:
+            print(f"  [PDF] pdfplumber error: {e}")
+
+    # ── PyMuPDF ───────────────────────────────────────────────────
+    def _try_pymupdf(self):
+        try:
+            import fitz  # pip install pymupdf
+            doc   = fitz.open(self.filepath)
+            parts = [page.get_text() for page in doc if page.get_text().strip()]
+            doc.close()
+            candidate = "\n".join(parts)
+            if len(candidate) > len(self.full_text):
+                self.full_text = candidate
+                print(f"  [PDF] PyMuPDF → {len(self.full_text):,} chars")
+        except ImportError:
+            print("  [PDF] PyMuPDF not installed (pip install pymupdf) — skipping")
+        except Exception as e:
+            print(f"  [PDF] PyMuPDF error: {e}")
+
+    # ── OCR via pytesseract + pdf2image ───────────────────────────
+    def _try_ocr(self):
+        try:
+            import pytesseract
+            from pdf2image import convert_from_path
+        except ImportError:
+            print("\n  [PDF] OCR libraries missing.  Install them:")
+            print("    pip install pytesseract pdf2image pymupdf")
+            print("    Tesseract OCR (Windows exe): https://github.com/UB-Mannheim/tesseract/wiki")
+            print("    After installing Tesseract, add it to PATH or set:")
+            print("      pytesseract.pytesseract.tesseract_cmd = r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'")
+            return
+
+        try:
+            print(f"  [PDF] OCR: converting {self._pages} pages to images (dpi=300)…")
+            images = convert_from_path(self.filepath, dpi=300)
+            parts  = []
+            for i, img in enumerate(images, 1):
+                print(f"  [PDF] OCR page {i}/{len(images)}…", end="\r")
+                t = pytesseract.image_to_string(img, lang="eng")
+                if t.strip():
+                    parts.append(t)
+            print()
+            candidate = "\n".join(parts)
+            if len(candidate) > len(self.full_text):
+                self.full_text = candidate
+                print(f"  [PDF] OCR → {len(self.full_text):,} chars extracted")
+        except Exception as e:
+            print(f"  [PDF] OCR failed: {e}")
 
     def extract_date(self):
         return _extract_date(self.full_text[:4000])
