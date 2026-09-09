@@ -50,7 +50,7 @@ import docx as python_docx
 
 
 # ─────────────────────────────────────────────
-# Classification helpers  (keyword → category / priority)
+# Classification helpers  (keyword -> category / priority)
 # These only CLASSIFY text extracted from the real report — they never
 # substitute or invent content.
 # ─────────────────────────────────────────────
@@ -122,7 +122,18 @@ def _categorise(text):
     return "General"
 
 
+_ANTI_HIGH_RE = re.compile(
+    r"\b(no\s+critical|no\s+issue[s]?|not\s+detected|not\s+found|no\s+problem[s]?|"
+    r"no\s+error[s]?|no\s+terminat|within\s+the\s+limit|within\s+limit|"
+    r"no\s+action\s+required|satisfactory|no\s+alert)\b",
+    re.IGNORECASE,
+)
+
+
 def _prioritise(text):
+    # If text explicitly states there is no problem, suppress HIGH/MEDIUM
+    if _ANTI_HIGH_RE.search(text):
+        return "LOW"
     for pri, pats in PRIORITY_PATTERNS.items():
         if any(re.search(p, text, re.IGNORECASE) for p in pats):
             return pri
@@ -298,13 +309,13 @@ class EWADocParser:
         try:
             import win32com.client, pythoncom
         except ImportError:
-            print("  [DOC] pywin32 not installed  →  trying docx2txt")
+            print("  [DOC] pywin32 not installed  ->  trying docx2txt")
             print("        (install later: pip install pywin32)")
             return False
 
         abs_path = str(Path(self.filepath).resolve())
 
-        # Remove internet zone mark → prevents Protected View
+        # Remove internet zone mark -> prevents Protected View
         try:
             import subprocess
             subprocess.run(
@@ -381,7 +392,7 @@ class EWADocParser:
             self.full_text = docx2txt.process(self.filepath) or ""
             return len(self.full_text.strip()) > 50
         except ImportError:
-            print("  [DOC] docx2txt not installed  →  pip install docx2txt")
+            print("  [DOC] docx2txt not installed  ->  pip install docx2txt")
         except Exception as e:
             print(f"  [DOC] docx2txt failed ({e})")
         return False
@@ -415,7 +426,7 @@ class EWADocParser:
         print("  [ERROR] Could not read the .doc file.  Options:")
         print("    pip install pywin32     (Word COM — recommended on Windows)")
         print("    pip install docx2txt   (no Word required)")
-        print("    Open in Word → Save As .docx or .pdf and re-run")
+        print("    Open in Word -> Save As .docx or .pdf and re-run")
         print("="*62 + "\n")
         sys.exit(1)
 
@@ -425,7 +436,7 @@ class EWADocParser:
 
 # ─────────────────────────────────────────────
 class EWAPDFParser:
-    _MIN_CHARS_PER_PAGE = 80   # below this → assume image/scanned PDF
+    _MIN_CHARS_PER_PAGE = 80   # below this -> assume image/scanned PDF
 
     def __init__(self, filepath):
         self.filepath  = filepath
@@ -439,7 +450,7 @@ class EWAPDFParser:
         # ── Attempt 1: pdfplumber (text-based PDFs) ───────────────
         self._try_pdfplumber()
         avg = len(self.full_text) / max(self._pages, 1)
-        print(f"  [PDF] pdfplumber → {len(self.full_text):,} chars across {self._pages} pages  (avg {avg:.0f}/page)")
+        print(f"  [PDF] pdfplumber  {len(self.full_text):,} chars across {self._pages} pages  (avg {avg:.0f}/page)")
 
         # ── Attempt 2: PyMuPDF — different engine, sometimes better
         if avg < self._MIN_CHARS_PER_PAGE:
@@ -463,7 +474,67 @@ class EWAPDFParser:
             sys.exit(1)
 
         print(f"  [PDF] Final: {len(self.full_text):,} chars extracted")
+        self._build_pdf_sections()
         return self.full_text
+
+    def _build_pdf_sections(self):
+        """
+        Parse EWA PDF text into structured sections (heading + description + recommendation).
+        EWA PDFs follow the pattern:
+            <numbered heading>
+            <body text>
+            Recommendation(s):
+            <recommendation text>
+        """
+        text = self.full_text
+        heading_re = re.compile(
+            r'^(\d+(?:\.\d+){0,2}\s{1,3}[A-Z][^\n]{5,75})\s*$',
+            re.MULTILINE,
+        )
+        matches = list(heading_re.finditer(text))
+        if not matches:
+            return
+
+        rec_split_re = re.compile(
+            r'\n[\s]*Recommendation[s]?\s*:(.*)$',
+            re.IGNORECASE | re.MULTILINE,
+        )
+
+        sections = []
+        for i, m in enumerate(matches):
+            heading    = m.group(1).strip()
+            body_start = m.end()
+            body_end   = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            body       = text[body_start:body_end].strip()
+
+            if len(body) < 40:          # skip near-empty sections
+                continue
+
+            rs = rec_split_re.search(body)
+            if rs:
+                desc_raw = body[:rs.start()].strip()
+                # Inline text on the Recommendation: line + everything after
+                inline_text = rs.group(1).strip()
+                after_text  = body[rs.end():].strip()
+                rec_combined = (inline_text + " " + after_text).strip()
+                rec_text = _clean_rec(rec_combined.split("\n\n")[0])
+            else:
+                desc_raw = body
+                rec_text = _pull_rec_from_text(body)
+
+            desc_text = re.sub(r"\s+", " ", desc_raw).strip()
+            full_desc = (heading + ".  " + desc_text[:380]).strip() if desc_text else heading
+
+            sections.append({
+                "heading":        heading,
+                "description":    full_desc[:500],
+                "recommendation": rec_text,
+                "priority":       _prioritise(heading + " " + desc_text[:300]),
+                "category":       _categorise(heading + " " + desc_text[:300]),
+            })
+
+        self.sections = sections
+        print(f"  [PDF] Structured -> {len(sections)} sections parsed")
 
     # ── pdfplumber ────────────────────────────────────────────────
     def _try_pdfplumber(self):
@@ -489,7 +560,7 @@ class EWAPDFParser:
             candidate = "\n".join(parts)
             if len(candidate) > len(self.full_text):
                 self.full_text = candidate
-                print(f"  [PDF] PyMuPDF → {len(self.full_text):,} chars")
+                print(f"  [PDF] PyMuPDF -> {len(self.full_text):,} chars")
         except ImportError:
             print("  [PDF] PyMuPDF not installed (pip install pymupdf) — skipping")
         except Exception as e:
@@ -521,7 +592,7 @@ class EWAPDFParser:
             candidate = "\n".join(parts)
             if len(candidate) > len(self.full_text):
                 self.full_text = candidate
-                print(f"  [PDF] OCR → {len(self.full_text):,} chars extracted")
+                print(f"  [PDF] OCR -> {len(self.full_text):,} chars extracted")
         except Exception as e:
             print(f"  [PDF] OCR failed: {e}")
 
@@ -565,41 +636,167 @@ def _extract_date(text):
     return datetime.now().strftime("%d.%m.%Y")
 
 
+_MID_SENTENCE_STARTS = re.compile(
+    r"^(in|with|from|of|for|at|on|by|to|and|or|but|that|which|where|when|"
+    r"is|are|was|were|has|have|had|been|will|would|could|should|"
+    r"provided|based|found|detected|performed|noted|listed|shown)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_rec(text):
+    """Return cleaned recommendation text, or '' if it looks like a sentence fragment."""
+    t = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(t) < 20:
+        return ""
+    if _MID_SENTENCE_STARTS.match(t):
+        return ""
+    return t[:500]
+
+
 def _pull_rec_from_text(text):
     """
-    Try to extract a recommendation sentence from body text.
-    Returns the actual sentence found, or empty string.
+    Extract recommendation text from body text.
+    Returns the actual text found, or empty string.
+    Only matches LABELED recommendation headers (with colon or start-of-line),
+    not incidental uses of the word "recommendation" inside sentences.
     """
     for pat in [
-        r"recommend[ation]*s?[:\s]+(.{20,400}?)(?:\.|$)",
-        r"action[s]?\s+required[:\s]+(.{20,400}?)(?:\.|$)",
-        r"should\s+(.{20,300}?)(?:\.|$)",
-        r"please\s+(.{20,300}?)(?:\.|$)",
+        # "Recommendation(s):" — must have explicit colon or be at start of line
+        r"(?m)^[\s]*Recommendation[s]?\s*:[\s]*(.{20,600}?)(?:\n\n|\Z)",
+        r"Recommendation[s]?\s*:\s+(.{20,600}?)(?:\n\n|\Z)",
+        r"(?m)^[\s]*Action[s]?\s+Required\s*:[\s]*(.{20,600}?)(?:\n\n|\Z)",
+        r"Action[s]?\s+Required\s*:\s+(.{20,600}?)(?:\n\n|\Z)",
+        r"(?m)^[\s]*Suggested Action[s]?\s*:[\s]*(.{20,600}?)(?:\n\n|\Z)",
+        r"(?m)^[\s]*Ma[ßs]nahme[n]?\s*:[\s]*(.{20,600}?)(?:\n\n|\Z)",
+        # SAP Note references
+        r"((?:see|refer to|apply|install)\s+SAP\s+Note[s]?\s+[\d,\s/and]+.{0,150}?)(?:\n|\Z)",
+        # Imperative action sentences (strong verbs that clearly indicate actions)
+        r"(?:Make sure|Ensure|Update|Upgrade|Install|Apply|Enable|Disable|Configure)"
+        r"\s+(?:that\s+)?(.{20,400}?)\.(?=\s|\n|\Z)",
+        r"(?:SAP\s+)?recommend[s]?\s+(?:that\s+|to\s+)?(.{20,400}?)\.(?=\s|\n|\Z)",
+        r"(?:should|must)\s+(?:be\s+)?(.{20,300}?)\.(?=\s|\n|\Z)",
     ]:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, text, re.IGNORECASE | re.DOTALL)
         if m:
-            return re.sub(r"\s+", " ", m.group(1)).strip()
+            rec = _clean_rec(m.group(1))
+            if rec:
+                return rec
     return ""
+
+
+def _fill_missing_recs(findings, full_text):
+    """
+    Post-process: for non-section findings still missing a recommendation, search
+    the surrounding text in the original document.  Stops at the next section
+    heading to avoid cross-section contamination.
+    """
+    # Pre-compute section heading positions for boundary checks
+    heading_pos = sorted(
+        m.start() for m in re.finditer(r'^\d+(?:\.\d+){0,2}[\s\t]+[A-Z]', full_text, re.MULTILINE)
+    )
+
+    labeled_re = re.compile(
+        r"Recommendation[s]?\s*:\s*(.{20,600}?)(?:\n\n|\Z)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    action_re = re.compile(
+        r"(?:Make sure|Ensure|Update|Upgrade|Install|Apply|Enable|Disable|Configure|"
+        r"see SAP Note)\s+(?:that\s+)?(.{20,400}?)\.(?=\s|\n|\Z)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    for f in findings:
+        if f.get("recommendation"):
+            continue
+        desc = f.get("description", "")
+        # Locate anchor in source text
+        idx = -1
+        for anchor_len in (60, 40, 25):
+            anchor = desc[:anchor_len].strip()
+            if len(anchor) < 15:
+                continue
+            idx = full_text.find(anchor)
+            if idx >= 0:
+                break
+        if idx < 0:
+            continue
+        # Bound the look-ahead to the next section heading (or 2000 chars max)
+        import bisect
+        next_hdg_idx = bisect.bisect_right(heading_pos, idx)
+        if next_hdg_idx < len(heading_pos):
+            boundary = min(heading_pos[next_hdg_idx], idx + 2000)
+        else:
+            boundary = idx + 2000
+        ahead = full_text[idx: boundary]
+        # 1. Labeled "Recommendation:" block
+        m = labeled_re.search(ahead)
+        if m:
+            rec = _clean_rec(m.group(1))
+            if rec:
+                f["recommendation"] = rec
+                continue
+        # 2. First imperative action sentence
+        m = action_re.search(ahead)
+        if m:
+            rec = _clean_rec(m.group(1))
+            if rec:
+                f["recommendation"] = rec
 
 
 # ─────────────────────────────────────────────
 # Finding Extractor — uses ONLY real report content
 # ─────────────────────────────────────────────
 
+def _is_noise(f):
+    """Return True if a finding is clearly structural noise, a URL, or a sentence fragment."""
+    desc = f.get("description", "").strip()
+    # Too short
+    if len(desc) < 20:
+        return True
+    # URL-only descriptions
+    if re.match(r"https?://", desc):
+        return True
+    # Sentence fragment — starts with a lowercase word (mid-paragraph capture)
+    first_word = desc.split()[0] if desc.split() else ""
+    if first_word and first_word[0].islower():
+        return True
+    # Short descriptions with no verb/sentence structure (table cells, product names, etc.)
+    if len(desc) < 40 and not re.search(
+        r"\b(is|are|was|were|has|have|had|provides?|contains?|shows?|detected|found|"
+        r"missing|failed|fails?|exceeds?|indicates?|configured|enabled|disabled|"
+        r"required|recommended|not|should|must|will|can|may)\b",
+        desc, re.IGNORECASE,
+    ):
+        return True
+    # EWA legend / rating-icon explanations (not actionable findings)
+    if re.search(r"\bicon\b.{0,30}\bindicat", desc, re.IGNORECASE):
+        return True
+    # Descriptions starting with a date-stamp (document references, not findings)
+    if re.match(r"^\d{2}\.\d{2}\.\d{4}\b", desc):
+        return True
+    # Pure short numbered heading with no body or recommendation
+    if re.match(r"^\d+[\.\d]*\s+\S", desc) and len(desc) < 55 and not f.get("recommendation"):
+        return True
+    return False
+
+
 def extract_findings(text, sections=None):
     """
     Build the findings list exclusively from content in the real document.
     No pre-written descriptions or recommendations exist in this function.
 
-    Priority 1 : structured sections (Word paragraph styles + colours)
+    Priority 1 : structured sections (Word paragraph styles + colours / PDF numbered sections)
     Priority 2 : RED / YELLOW / GREEN rating lines
     Priority 3 : Recommendation / Action Required text blocks
-    Priority 4 : Numbered section headings with body text
+    Priority 4 : Numbered section headings with body text  (skipped when sections provided)
     """
     findings  = []
     seen_keys = set()
 
     def add(f):
+        if _is_noise(f):
+            return
         key = f["description"][:50].lower().strip()
         if key and key not in seen_keys and len(f["description"].strip()) > 15:
             seen_keys.add(key)
@@ -619,7 +816,7 @@ def extract_findings(text, sections=None):
                 "recommendation": s.get("recommendation", "")[:400],
                 "source":         "Document Section",
             })
-        print(f"  Structured sections → {len(findings)} findings")
+        print(f"  Structured sections -> {len(findings)} findings")
 
     # ── 2. Inline RED / YELLOW / GREEN rating lines ───────────────
     rating_re = re.compile(
@@ -645,11 +842,13 @@ def extract_findings(text, sections=None):
     # ── 3. Recommendation / Action Required blocks ────────────────
     rec_re = re.compile(
         r"(?:Recommendation[s]?|Suggested Action[s]?|Action[s]?\s+Required)"
-        r"[:\s]+(.{30,600}?)(?=\n\n|\n[A-Z][A-Z]|\Z)",
+        r":\s+(.{30,600}?)(?=\n\n|\n[A-Z][A-Z]|\Z)",
         re.IGNORECASE | re.DOTALL,
     )
     for m in rec_re.finditer(text):
-        rec_text    = re.sub(r"\s+", " ", m.group(1)).strip()
+        rec_text = _clean_rec(m.group(1))
+        if not rec_text:
+            continue      # skip if recommendation text is a fragment / garbage
         ctx_start   = max(0, m.start() - 500)
         context     = text[ctx_start: m.start()]
         priority    = _prioritise(context + rec_text)
@@ -660,29 +859,34 @@ def extract_findings(text, sections=None):
             "category":       category,
             "priority":       priority,
             "description":    description,
-            "recommendation": rec_text[:400],
+            "recommendation": rec_text,
             "source":         "Recommendation block",
         })
 
     # ── 4. Numbered section headings (e.g. "2.3 Database Activity") ──
-    section_re = re.compile(
-        r"^(\d+[\.\d]*\s+[A-Z][^\n]{10,90})\n((?:.{15,}\n?){1,10})",
-        re.MULTILINE,
-    )
-    for m in section_re.finditer(text):
-        heading  = m.group(1).strip()
-        body     = re.sub(r"\s+", " ", m.group(2)).strip()
-        priority = _prioritise(heading + " " + body)
-        if priority == "LOW":
-            continue
-        rec = _pull_rec_from_text(body)
-        add({
-            "category":       _categorise(heading + " " + body),
-            "priority":       priority,
-            "description":    (heading + ".  " + body[:250]).strip(),
-            "recommendation": rec,
-            "source":         "Section heading",
-        })
+    # Only run when no structured sections exist (avoids duplication / noise)
+    if not sections:
+        section_re = re.compile(
+            r"^(\d+[\.\d]*\s+[A-Z][^\n]{10,90})\n((?:.{15,}\n?){1,10})",
+            re.MULTILINE,
+        )
+        for m in section_re.finditer(text):
+            heading  = m.group(1).strip()
+            body     = re.sub(r"\s+", " ", m.group(2)).strip()
+            priority = _prioritise(heading + " " + body)
+            if priority == "LOW":
+                continue
+            rec = _pull_rec_from_text(body)
+            add({
+                "category":       _categorise(heading + " " + body),
+                "priority":       priority,
+                "description":    (heading + ".  " + body[:250]).strip(),
+                "recommendation": rec,
+                "source":         "Section heading",
+            })
+
+    # ── Post-process: fill any still-empty recommendations ────────
+    _fill_missing_recs(findings, text)
 
     print(f"  Total unique findings: {len(findings)}")
     return findings
@@ -1003,7 +1207,7 @@ def analyze(filepath, output_path=None, sid=""):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="SAP EWA Analyzer — extracts real report content → Excel action tracker",
+        description="SAP EWA Analyzer — extracts real report content -> Excel action tracker",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
