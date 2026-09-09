@@ -335,20 +335,59 @@ class EWADocParser:
             print("  [DOC] pywin32 not installed  →  trying docx2txt fallback")
             print("        (to use Word COM in future: pip install pywin32)")
             return False
+
+        abs_path = str(Path(self.filepath).resolve())
+
+        # Remove the internet-zone mark so Word won't open in Protected View
         try:
-            print(f"  [DOC] Using Word COM to open: {self.filepath}")
+            import subprocess
+            subprocess.run(
+                ["powershell", "-Command", f'Unblock-File -LiteralPath "{abs_path}"'],
+                capture_output=True, timeout=15,
+            )
+            print("  [DOC] Unblocked file (removed internet zone mark)")
+        except Exception:
+            pass  # non-fatal
+
+        try:
+            print(f"  [DOC] Using Word COM to open: {abs_path}")
             pythoncom.CoInitialize()
             word = win32com.client.Dispatch("Word.Application")
             word.Visible = False
-            abs_path = str(Path(self.filepath).resolve())
-            doc = word.Documents.Open(abs_path, ReadOnly=True)
+            word.DisplayAlerts = False
+
+            doc = None
+            try:
+                doc = word.Documents.Open(
+                    abs_path,
+                    False,   # ConfirmConversions
+                    True,    # ReadOnly
+                    False,   # AddToRecentFiles
+                )
+            except Exception:
+                # File still landed in ProtectedView — promote it
+                print("  [DOC] Document opened in Protected View — promoting to editable...")
+                for pvw in word.ProtectedViewWindows:
+                    if abs_path.lower() in str(pvw.Document.FullName).lower():
+                        doc = pvw.Edit()
+                        break
+
+            if doc is None:
+                raise RuntimeError("Could not obtain a Word Document object")
+
             self.full_text = doc.Content.Text
             doc.Close(False)
             word.Quit()
             pythoncom.CoUninitialize()
             return True
+
         except Exception as e:
             print(f"  [DOC] COM method failed ({e}), trying docx2txt fallback...")
+            try:
+                word.Quit()
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
             return False
 
     # ── .doc fallback 1: docx2txt (pip install docx2txt) ─────────
