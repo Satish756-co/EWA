@@ -20,7 +20,12 @@ from pathlib import Path
 # ─────────────────────────────────────────────
 def check_dependencies():
     missing = []
-    for pkg, imp in [("pdfplumber", "pdfplumber"), ("beautifulsoup4", "bs4"), ("openpyxl", "openpyxl")]:
+    for pkg, imp in [
+        ("pdfplumber",   "pdfplumber"),
+        ("beautifulsoup4", "bs4"),
+        ("openpyxl",     "openpyxl"),
+        ("python-docx",  "docx"),
+    ]:
         try:
             __import__(imp)
         except ImportError:
@@ -38,6 +43,7 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side, GradientFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+import docx as python_docx
 
 
 # ─────────────────────────────────────────────
@@ -286,6 +292,90 @@ KNOWN_CHECKS = [
 # ─────────────────────────────────────────────
 # Parsers
 # ─────────────────────────────────────────────
+
+class EWADocParser:
+    """Handles both .docx (via python-docx) and legacy .doc (via Word COM on Windows)."""
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.full_text = ""
+
+    def parse(self):
+        ext = Path(self.filepath).suffix.lower()
+        if ext == ".docx":
+            self._parse_docx()
+        else:
+            # .doc — try COM automation first (requires Word installed), then fallback
+            self._parse_doc_com() or self._parse_doc_fallback()
+        print(f"  [DOC] {len(self.full_text):,} chars extracted")
+        return self.full_text
+
+    # ── .docx via python-docx ─────────────────────────────────────
+    def _parse_docx(self):
+        print(f"  [DOCX] Parsing: {self.filepath}")
+        doc = python_docx.Document(self.filepath)
+        parts = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+        # Also extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        parts.append(cell.text.strip())
+        self.full_text = "\n".join(parts)
+
+    # ── .doc via Windows COM (Word must be installed) ─────────────
+    def _parse_doc_com(self):
+        try:
+            import win32com.client
+            import pythoncom
+            print(f"  [DOC] Using Word COM to open: {self.filepath}")
+            pythoncom.CoInitialize()
+            word = win32com.client.Dispatch("Word.Application")
+            word.Visible = False
+            abs_path = str(Path(self.filepath).resolve())
+            doc = word.Documents.Open(abs_path, ReadOnly=True)
+            self.full_text = doc.Content.Text
+            doc.Close(False)
+            word.Quit()
+            pythoncom.CoUninitialize()
+            return True
+        except Exception as e:
+            print(f"  [DOC] COM method failed ({e}), trying fallback...")
+            return False
+
+    # ── .doc fallback: convert via LibreOffice if COM unavailable ──
+    def _parse_doc_fallback(self):
+        import subprocess, tempfile, shutil
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        if soffice:
+            try:
+                print(f"  [DOC] Using LibreOffice to convert: {self.filepath}")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    subprocess.run(
+                        [soffice, "--headless", "--convert-to", "docx",
+                         "--outdir", tmpdir, self.filepath],
+                        check=True, capture_output=True
+                    )
+                    stem = Path(self.filepath).stem
+                    converted = Path(tmpdir) / f"{stem}.docx"
+                    if converted.exists():
+                        old_path = self.filepath
+                        self.filepath = str(converted)
+                        self._parse_docx()
+                        self.filepath = old_path
+                        return True
+            except Exception as e:
+                print(f"  [DOC] LibreOffice conversion failed: {e}")
+        print("\n  [ERROR] Cannot read .doc file directly.")
+        print("  Please save the EWA report as .docx or .pdf and re-run.\n")
+        sys.exit(1)
+
+    def extract_date(self):
+        return _extract_date_from_text(self.full_text[:4000])
+
 
 class EWAPDFParser:
     def __init__(self, filepath):
@@ -742,8 +832,10 @@ def analyze(filepath, output_path=None, sid=""):
         parser = EWAPDFParser(str(filepath))
     elif ext in (".html", ".htm"):
         parser = EWAHTMLParser(str(filepath))
+    elif ext in (".doc", ".docx"):
+        parser = EWADocParser(str(filepath))
     else:
-        print(f"\n[ERROR] Unsupported file type '{ext}'. Supported: .pdf  .html  .htm")
+        print(f"\n[ERROR] Unsupported file type '{ext}'. Supported: .pdf  .html  .htm  .doc  .docx")
         sys.exit(1)
 
     print("\n" + "="*62)
@@ -798,16 +890,18 @@ def analyze(filepath, output_path=None, sid=""):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="SAP EWA Report Analyzer — PDF/HTML → Excel Action Tracker",
+        description="SAP EWA Report Analyzer — PDF/HTML/DOC/DOCX → Excel Action Tracker",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python ewa_analyzer.py --file "C:/EWA/report.pdf"
-  python ewa_analyzer.py --file "C:/EWA/report.html" --sid PRD
-  python ewa_analyzer.py --file "C:/EWA/report.pdf"  --output "C:/Output/EWA_PRD.xlsx" --sid PRD
+  python ewa_analyzer.py --file "C:/EWA/report.doc"   --sid PRD
+  python ewa_analyzer.py --file "C:/EWA/report.docx"  --sid PRD
+  python ewa_analyzer.py --file "C:/EWA/report.html"  --sid PRD
+  python ewa_analyzer.py --file "C:/EWA/report.pdf"   --output "C:/Output/EWA_PRD.xlsx" --sid PRD
         """,
     )
-    ap.add_argument("--file",   required=True, help="Path to EWA report (.pdf or .html/.htm)")
+    ap.add_argument("--file",   required=True, help="Path to EWA report (.pdf, .html, .htm, .doc, .docx)")
     ap.add_argument("--output", default=None,  help="Output Excel path (auto-generated if omitted)")
     ap.add_argument("--sid",    default="",    help="SAP System ID, e.g. PRD")
     args = ap.parse_args()
