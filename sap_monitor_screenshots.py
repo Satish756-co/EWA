@@ -62,7 +62,7 @@ STATUS_OFFSET_Y = 282   # pixels below System → center of Status... row
 CAPTURE_SYSTEM_STATUS = True
 
 # Set to False to skip all t-code navigation (useful while testing Status only).
-RUN_TCODES = False
+RUN_TCODES = True
 
 # Pixel offset of the Navigate button INSIDE the Status popup, measured
 # from the popup's top-left corner.  The button is the second icon in the
@@ -258,20 +258,6 @@ def _wait_new_window(before, timeout=6):
         time.sleep(0.2)
     return None
 
-def _find_navigate_button(popup_hwnd):
-    """Try child-window enumeration first; returns (cx, cy) or None."""
-    found = []
-    def _cb(h, _):
-        if "navigate" in win32gui.GetWindowText(h).lower():
-            found.append(h)
-    try:
-        win32gui.EnumChildWindows(popup_hwnd, _cb, None)
-    except Exception:
-        pass
-    if found:
-        r = win32gui.GetWindowRect(found[0])
-        return ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2)
-    return None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -309,8 +295,7 @@ def capture_system_status(main_hwnd, doc, tmp_dir, img_index):
     try:
         _focus_and_restore(status_hwnd)
         time.sleep(SCREENSHOT_DELAY)
-        rect = win32gui.GetWindowRect(status_hwnd)
-        ImageGrab.grab(bbox=rect).save(str(img1))
+        ImageGrab.grab().save(str(img1))
     except Exception as exc:
         print(f"  [WARN] Status screenshot failed: {exc}")
         img1 = None
@@ -318,29 +303,22 @@ def capture_system_status(main_hwnd, doc, tmp_dir, img_index):
     _add_tcode_block(doc, "System > Status", "System Status", str(img1) if img1 else None)
     img_index += 1
 
-    # Click Navigate button
+    # ── Open Kernel info via Shift+F5 (Navigate button shortcut) ─
     before2 = _visible_top_windows()
     _focus_and_restore(status_hwnd)
+    time.sleep(0.4)
+    print("  [Status] Opening kernel info via Shift+F5")
+    pyautogui.hotkey("shift", "f5")
+    time.sleep(2.5)   # wait for kernel popup to fully render
 
-    btn = _find_navigate_button(status_hwnd)
-    if btn:
-        pyautogui.click(*btn)
-    else:
-        # Positional fallback — adjust STATUS_NAV_BTN_X/Y at top of file if needed
-        wr = win32gui.GetWindowRect(status_hwnd)
-        pyautogui.click(wr[0] + STATUS_NAV_BTN_X, wr[1] + STATUS_NAV_BTN_Y)
-
-    time.sleep(3.0)   # wait for kernel popup to fully load
-
-    # Screenshot 2: Kernel info popup
+    # ── Screenshot 2: Kernel info popup ──────────────────────────
     kernel_hwnd = _wait_new_window(before2, timeout=8)
-    if kernel_hwnd:
+    if kernel_hwnd and win32gui.IsWindow(kernel_hwnd):
         img2 = tmp_dir / f"{img_index:02d}_SYSTEM_KERNEL.png"
         try:
             _focus_and_restore(kernel_hwnd)
             time.sleep(SCREENSHOT_DELAY)
-            rect = win32gui.GetWindowRect(kernel_hwnd)
-            ImageGrab.grab(bbox=rect).save(str(img2))
+            ImageGrab.grab().save(str(img2))
         except Exception as exc:
             print(f"  [WARN] Kernel screenshot failed: {exc}")
             img2 = None
@@ -349,17 +327,22 @@ def capture_system_status(main_hwnd, doc, tmp_dir, img_index):
                          "Kernel Information", str(img2) if img2 else None)
         img_index += 1
 
-        _focus_and_restore(kernel_hwnd)
-        pyautogui.press("escape")
-        time.sleep(0.4)
+        # Close kernel popup with Enter, then close status popup with Enter
+        try:
+            _focus_and_restore(kernel_hwnd)
+            pyautogui.press("enter")
+            time.sleep(0.6)
+        except Exception:
+            pass
     else:
         print("  [WARN] Kernel info popup did not appear")
 
-    # Close status popup
+    # Close status popup with Enter (green checkmark = OK)
     try:
-        _focus_and_restore(status_hwnd)
-        pyautogui.press("escape")
-        time.sleep(0.4)
+        if win32gui.IsWindow(status_hwnd):
+            _focus_and_restore(status_hwnd)
+            pyautogui.press("enter")
+            time.sleep(0.5)
     except Exception:
         pass
 
@@ -385,39 +368,41 @@ def _click_command_field(hwnd):
     if CMD_FIELD_ABSOLUTE:
         x, y = CMD_FIELD_X, CMD_FIELD_Y
     else:
-        rect = win32gui.GetWindowRect(hwnd)   # (left, top, right, bottom)
+        rect = win32gui.GetWindowRect(hwnd)
         x = rect[0] + CMD_FIELD_X
         y = rect[1] + CMD_FIELD_Y
+    print(f"  [CMD] Clicking command field at screen ({x}, {y})")
     pyautogui.click(x, y)
     time.sleep(0.2)
 
 
 def navigate_tcode(hwnd, tcode, press_f8=False):
     """
-    Bring the SAP window to front, click the command field,
-    clear it, type /n<tcode>, press Enter, and optionally F8.
+    Navigate to tcode via /n<tcode>.
+    Captures the window title *before* pressing Enter, waits for the title to
+    first change (confirms SAP received the command), then waits until the new
+    title is stable (screen fully loaded).  This avoids the false-positive where
+    the pre-nav title happens to look stable immediately after Enter.
     """
     try:
         _focus_and_restore(hwnd)
         _click_command_field(hwnd)
 
-        # Clear any existing text and type the navigation command
+        old_title = win32gui.GetWindowText(hwnd)
+
         pyautogui.hotkey("ctrl", "a")
         time.sleep(0.1)
         pyautogui.typewrite(f"/n{tcode}", interval=0.05)
         pyautogui.press("enter")
-        time.sleep(WAIT_AFTER_NAV)
 
-        # Dismiss any popup (press Enter/Escape)
-        pyautogui.press("escape")
-        time.sleep(0.2)
+        # Phase 1: wait for title to change (confirms Enter was processed)
+        # Phase 2: wait for new title to stabilise (page fully loaded)
+        _wait_title_changed_then_stable(hwnd, old_title, timeout=WAIT_AFTER_NAV + 5)
 
         if press_f8:
             _focus_and_restore(hwnd)
             pyautogui.press("f8")
-            time.sleep(WAIT_AFTER_NAV)
-            pyautogui.press("escape")
-            time.sleep(0.2)
+            _wait_title_stable(hwnd, timeout=WAIT_AFTER_NAV + 3)
 
         return True
 
@@ -426,21 +411,63 @@ def navigate_tcode(hwnd, tcode, press_f8=False):
         return False
 
 
+def _wait_title_changed_then_stable(hwnd, old_title, timeout=10):
+    """
+    Phase 1: poll until the window title differs from old_title.
+    Phase 2: poll until the title has been unchanged for 2 × 0.5 s.
+    """
+    deadline = time.time() + timeout
+
+    # Phase 1 — wait for navigation to kick in
+    while time.time() < deadline:
+        try:
+            title = win32gui.GetWindowText(hwnd)
+        except Exception:
+            break
+        if title != old_title:
+            break
+        time.sleep(0.3)
+
+    # Phase 2 — wait for the new screen to finish loading
+    _wait_title_stable(hwnd, timeout=deadline - time.time())
+
+
+def _wait_title_stable(hwnd, timeout=6):
+    """
+    Poll the SAP window title every 0.5 s.  Return once the title has
+    been unchanged for two consecutive polls, or once *timeout* expires.
+    Guarantees the screen has finished loading before we screenshot.
+    """
+    prev  = ""
+    same  = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            title = win32gui.GetWindowText(hwnd)
+        except Exception:
+            break
+        if title == prev:
+            same += 1
+            if same >= 2:   # stable for ~1 s
+                return
+        else:
+            same = 0
+            prev = title
+        time.sleep(0.5)
+    time.sleep(0.5)   # one final settle after timeout
+
+
 # ─────────────────────────────────────────────────────────────────
 # Screenshot
 # ─────────────────────────────────────────────────────────────────
 
 def capture_window(hwnd):
-    """Bring the SAP window to front and capture its bounding rect."""
-    try:
-        _focus_and_restore(hwnd)
-        time.sleep(SCREENSHOT_DELAY)
-        rect = win32gui.GetWindowRect(hwnd)
-        return ImageGrab.grab(bbox=rect)
-    except Exception as exc:
-        print(f"  [WARN] Window capture failed ({exc}), falling back to full screen")
-        time.sleep(SCREENSHOT_DELAY)
-        return ImageGrab.grab()
+    """Bring the SAP window to front and capture the full screen.
+    Full-screen capture includes the taskbar so the system date/time is visible.
+    """
+    _focus_and_restore(hwnd)
+    time.sleep(SCREENSHOT_DELAY)
+    return ImageGrab.grab()   # full screen
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -591,14 +618,7 @@ def run(sid="", output_path=None, tcodes=None):
         img_index += 1
 
     # Return to SAP Easy Access
-    try:
-        _focus_and_restore(hwnd)
-        _click_command_field(hwnd)
-        pyautogui.hotkey("ctrl", "a")
-        pyautogui.typewrite("/n", interval=0.05)
-        pyautogui.press("enter")
-    except Exception:
-        pass
+    # (intentionally not navigating away — leave the session as-is)
 
     doc.save(str(output_path))
 
