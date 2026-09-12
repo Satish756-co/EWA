@@ -371,7 +371,7 @@ def capture_sm21(hwnd, doc, tmp_dir, img_index):
     navigate_tcode(hwnd, "SM21")
     time.sleep(1.5)   # let the screen fully render
 
-    today = datetime.now().strftime("%m/%d/%Y")   # MM/DD/YYYY as shown in SAP
+    today = datetime.now().strftime("%d.%m.%y")   # DD.MM.YY as shown in SAP
     print(f"  [SM21] Filling: From/To Date={today}, Time=00:00:00/23:50:00, ExtInst=*")
 
     _focus_and_restore(hwnd)
@@ -537,7 +537,7 @@ def capture_sm13(hwnd, doc, tmp_dir, img_index):
     time.sleep(1.5)
 
     _focus_and_restore(hwnd)
-    today = datetime.now().strftime("%m/%d/%Y")
+    today = datetime.now().strftime("%d.%m.%y")
 
     def _tab():
         pyautogui.press("tab")
