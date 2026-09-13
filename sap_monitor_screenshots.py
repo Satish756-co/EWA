@@ -728,6 +728,15 @@ def capture_smq1(hwnd, doc, tmp_dir, img_index):
         img_path = None
 
     _add_block(doc, "SMQ1", "qRFC Monitor (Outbound)", str(img_path) if img_path else None)
+
+    _focus_and_restore(hwnd)
+    time.sleep(0.3)
+    print("  [SMQ1] Pressing F3 to go back...")
+    pyautogui.press("f3")
+    time.sleep(1.2)
+    pyautogui.press("f3")
+    time.sleep(1.2)
+
     return img_index + 1
 
 
@@ -758,6 +767,15 @@ def capture_smq2(hwnd, doc, tmp_dir, img_index):
         img_path = None
 
     _add_block(doc, "SMQ2", "qRFC Monitor (Inbound)", str(img_path) if img_path else None)
+
+    _focus_and_restore(hwnd)
+    time.sleep(0.3)
+    print("  [SMQ2] Pressing F3 to go back...")
+    pyautogui.press("f3")
+    time.sleep(1.2)
+    pyautogui.press("f3")
+    time.sleep(1.2)
+
     return img_index + 1
 
 
@@ -812,6 +830,14 @@ def capture_smqs(hwnd, doc, tmp_dir, img_index):
 
     _add_block(doc, "SMQS", "qRFC Scheduler – Resources",
                str(img_path2) if img_path2 else None)
+
+    _focus_and_restore(hwnd)
+    time.sleep(0.3)
+    print("  [SMQS] Pressing F3 to go back...")
+    pyautogui.press("f3")
+    time.sleep(1.2)
+    pyautogui.press("f3")
+    time.sleep(1.2)
 
     return img_index + 2
 
@@ -1073,71 +1099,24 @@ def capture_aif_err(hwnd, doc, tmp_dir, img_index):
 def _create_document(sid):
     doc = Document()
     for sec in doc.sections:
-        sec.top_margin    = Inches(0.75)
-        sec.bottom_margin = Inches(0.75)
+        sec.top_margin    = Inches(0.5)
+        sec.bottom_margin = Inches(0.5)
         sec.left_margin   = Inches(0.75)
         sec.right_margin  = Inches(0.75)
-
-    for _ in range(3):
-        doc.add_paragraph()
-
-    title_para = doc.add_paragraph()
-    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title_para.add_run("SAP GUI Monitoring – Screenshots")
-    run.bold = True
-    run.font.size = Pt(24)
-    run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
-
-    doc.add_paragraph()
-
-    meta_para = doc.add_paragraph()
-    meta_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta_run = meta_para.add_run(
-        f"System / SID:  {sid or '—'}"
-        f"     |     Generated:  {datetime.now().strftime('%Y-%m-%d  %H:%M')}"
-    )
-    meta_run.font.size = Pt(12)
-    meta_run.font.color.rgb = RGBColor(0x40, 0x40, 0x40)
-
-    doc.add_page_break()
     return doc
 
 
 def _add_block(doc, tcode, description, img_path):
     h = doc.add_paragraph()
-    h.paragraph_format.space_before = Pt(8)
-    h.paragraph_format.space_after  = Pt(2)
-
-    r_code = h.add_run(tcode)
-    r_code.bold = True
-    r_code.font.size = Pt(14)
-    r_code.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
-
-    r_sep = h.add_run("   —   ")
-    r_sep.font.size = Pt(13)
-    r_sep.font.color.rgb = RGBColor(0x70, 0x70, 0x70)
-
-    r_desc = h.add_run(description)
-    r_desc.font.size = Pt(13)
-    r_desc.font.color.rgb = RGBColor(0x30, 0x30, 0x30)
-
-    p   = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after  = Pt(5)
-    pPr = p._p.get_or_add_pPr()
-    pBdr = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"),   "single")
-    bottom.set(qn("w:sz"),    "6")
-    bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), "1F4E79")
-    pBdr.append(bottom)
-    pPr.append(pBdr)
+    h.paragraph_format.space_before = Pt(10)
+    h.paragraph_format.space_after  = Pt(4)
+    r = h.add_run(tcode)
+    r.bold = True
+    r.font.size = Pt(12)
 
     if img_path and Path(img_path).exists():
         try:
             doc.add_picture(img_path, width=Inches(7.0))
-            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
         except Exception as exc:
             doc.add_paragraph(f"[Could not embed screenshot: {exc}]")
     else:
@@ -1204,47 +1183,47 @@ def run(sid="", output_path=None):
     # Step 10: ST06 OS Monitor (main + Snapshot>System info + Snapshot>Filesystem)
     img_index = capture_st06(hwnd, doc, tmp_dir, img_index)
 
-    # Step 11: DBACOCKPIT (Current Status>Overview, Current Status>Alerts, Backup>Backup Catalog)
-    img_index = capture_dbacockpit(hwnd, doc, tmp_dir, img_index)
-
-    # Step 12: SM51 Application Server List
+    # Step 11: SM51 Application Server List
     img_index = capture_sm51(hwnd, doc, tmp_dir, img_index)
 
-    # Step 13: SM50 Work Process Overview
+    # Step 12: SM50 Work Process Overview
     img_index = capture_sm50(hwnd, doc, tmp_dir, img_index)
 
-    # Step 14: ST22 ABAP Dump Analysis
+    # Step 13: ST22 ABAP Dump Analysis
     img_index = capture_st22(hwnd, doc, tmp_dir, img_index)
 
-    # Step 15: ST02 Tune Summary / Buffer Information
+    # Step 14: ST02 Tune Summary / Buffer Information
     img_index = capture_st02(hwnd, doc, tmp_dir, img_index)
 
-    # Step 16: RZ12 RFC Server Group Maintenance
+    # Step 15: RZ12 RFC Server Group Maintenance
     img_index = capture_rz12(hwnd, doc, tmp_dir, img_index)
 
-    # Step 17: SMICM ICM Monitor
+    # Step 16: SMICM ICM Monitor
     img_index = capture_smicm(hwnd, doc, tmp_dir, img_index)
 
-    # Step 18: SMGW Gateway Monitor
+    # Step 17: SMGW Gateway Monitor
     img_index = capture_smgw(hwnd, doc, tmp_dir, img_index)
 
-    # Step 19: SMMS Message Server Monitor
+    # Step 18: SMMS Message Server Monitor
     img_index = capture_smms(hwnd, doc, tmp_dir, img_index)
 
-    # Step 20: SICK Installation Check
+    # Step 19: SICK Installation Check
     img_index = capture_sick(hwnd, doc, tmp_dir, img_index)
 
-    # Step 21: AL08 Users Logged On
+    # Step 20: AL08 Users Logged On
     img_index = capture_al08(hwnd, doc, tmp_dir, img_index)
 
-    # Step 22: SM04 User Overview
+    # Step 21: SM04 User Overview
     img_index = capture_sm04(hwnd, doc, tmp_dir, img_index)
 
-    # Step 23: /SDF/SMON System Monitor
+    # Step 22: /SDF/SMON System Monitor
     img_index = capture_sdf_smon(hwnd, doc, tmp_dir, img_index)
 
-    # Step 24: /AIF/ERR AIF Error Handling
+    # Step 23: /AIF/ERR AIF Error Handling
     img_index = capture_aif_err(hwnd, doc, tmp_dir, img_index)
+
+    # Step 24: DBACOCKPIT (Current Status>Overview, Current Status>Alerts, Backup>Backup Catalog)
+    img_index = capture_dbacockpit(hwnd, doc, tmp_dir, img_index)
 
     doc.save(str(output_path))
 
